@@ -43,12 +43,16 @@ fliplr = function(x) {
 #' @export
 #'
 #' @examples
-prepare_overlay_data <- function(poly, raster, color = "black")
+prepare_overlay_data <- function(data, raster, color = "black")
 {
-  # if (inhe)
-  
-  data_r <- raster::rasterize(as(poly, "Spatial"), raster, 1, background=0)
-  
+  if (inherits(dem_cropped_small, "RasterLayer"))
+  {
+    data_r <- data
+  } else 
+  {
+    data_r <- raster::rasterize(as(data, "Spatial"), raster, 1, background=0)
+    
+  }
   
   mat_r <- matrix(
     raster::extract(data_r,raster::extent(data_r)),
@@ -58,7 +62,7 @@ prepare_overlay_data <- function(poly, raster, color = "black")
   tempfilename = tempfile()
   png(tempfilename,width = nrow(mat_r), height = ncol(mat_r))
   par(mar = c(0,0,0,0))
-  raster::image(fliplr(mat_r), axes = FALSE, col = c("transparent", color))
+  raster::image(fliplr(mat_r), axes = FALSE, col = color))
   dev.off()
   map_r <- png::readPNG(tempfilename)
   return(map_r)
