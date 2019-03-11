@@ -1,116 +1,232 @@
-pacman::p_load(tidyverse, sf, raster, rayshader, data.table, mapview, mapedit)
 
-shp <- editMap(mapview())
-myshp <- as(shp$finished, "Spatial")
+# Script setup ------------------------------------------------------------
 
 
-mountain_pts <- editMap(mapview())
+pacman::p_load(tidyverse, sf, raster, rayshader, janitor, data.table, mapview, mapedit, osmplotr, osmdata)
 
-mts_sjj <- mountain_pts$finished %>% 
-  mutate(
-    name = c("Trebevic", "Zuc", "Igman")
-  )
+source("./R/functions_misc.R")
+#
+# aa <- mapedit::editMap(mapview(dem_cropped))
 
-
-aa <- raster("/home/mirza/Data/SRTM DEM/N43E018.SRTMGL1.hgt/N43E018.hgt")
+# Load data ---------------------------------------------------------------
 
 
-bih_sf <- st_read("/home/mirza/Data/gadm36_BIH.gpkg", layer = "gadm36_BIH_3")
-
-head(bih_sf)
-
-bih_sf$NAME_2 %>% unique
-
-sarajevo_cant <- bih_sf %>% 
+# aa
+# Load BiH boundaries
+bih_sf <- st_read("./Data/Vector/gadm36_BIH.gpkg", layer = "gadm36_BIH_3")
+crop_outline <- st_read("./Data/Vector/extent_smaller.gpkg")
+# Subset only Kanton Sarajevo
+sarajevo_canton <- bih_sf %>% 
   filter(NAME_2 == "Sarajevo") %>% 
   st_cast("MULTILINESTRING") %>% 
   as("Spatial")
 
-plot(rail_raster)
-mapview(sarajevo_cant)
-rail_raster <- raster(ncol=ncol(dem_cropped), nrow=nrow(dem_cropped))
+# Load Sarajevo DEM
+dem_cropped <- raster("./Data/DEM/Sarajevo_valley_SRTM.tif")
+dem_cropped_small <- crop(dem_cropped, crop_outline)
+# dem_cropped_small[dem_cropped_small < 545] = 545
 
-rail_raster <- setExtent(rail_raster, extent(dem_cropped))
-rail_raster <- rasterize(sarajevo_cant, rail_raster, 1, background=0)
-rail_mat <- matrix(extract(rail_raster, extent(rail_raster)),
-                   nrow=nrow(rail_raster),
-                   ncol=ncol(rail_raster))
-rail_mat <- rail_mat[, ncol(rail_mat):1]  # flip
-
-dem_cropped <- crop(aa, myshp)
-
-plot(rail_raster)
-plot(as(mts_sjj, "Spatial"), add =T)
-mapview(dem_cropped)
-writeRaster(dem_cropped, "/home/mirza/Data/SRTM DEM/Sarajevo_valley_SRTM.tif")
+# Load sarajevo mountans -- approximate location. Right now Igman, Trebevic, Hum, and Zuc
+mts_sjj <- st_read("./Data/Vector/sarajevo_mountains.gpkg")
 
 
-ba_boundary <- getData("GADM", country = "BA", level = 2)
+# Create roads and rivers layer from open street maps
+
+# Roads
+sarajevo_roads <- crop_outline %>% 
+  st_bbox() %>% 
+  opq() %>% 
+  add_osm_feature(key = "highway") %>% 
+  osmdata_sf() %>% 
+  `$`(osm_lines) %>% 
+  filter(highway == "primary") %>%
+  st_buffer(dist = 0.0004) %>%
+  st_union()
+
+# sarajevo_roads_raw %>% 
+#   st_buffer(dist = 0.0003) %>%
+#   st_union()
 
 
-elmat = matrix(raster::extract(dem_cropped,raster::extent(dem_cropped)),
-               nrow=ncol(dem_cropped),ncol=nrow(dem_cropped))
+# sarajevo_roads <- sarajevo_roads_raw %>% 
+#   filter(highway == "primary") %>%
+#   # filter(highway %in% c("primary", "secondary", "tertiary")) %>%
+#   st_buffer(dist = 0.0003) %>%
+#   st_union()
 
-dim(elmat)
-coordinates(dem_cropped) 
-st_coordinates(mts_sjj)
+# sarajevo_roads_raw %>% 
+#   tabyl(highway) %>% 
+#   arrange(n)
 
-mts_sjj_sp <- as(mts_sjj, "Spatial")
+# Rivers - needs cleaning up
+sarajevo_rivers_raw <- crop_outline %>% 
+  st_bbox() %>% 
+  opq() %>% 
+  add_osm_feature(key = "waterway") %>% 
+  osmdata_sf() %>% 
+  `$`(osm_lines) %>% 
+  filter(name %in% c("Miljacka", "Bosna", "Miljacka Mokranjska", "Miljacka Paljanska",
+                     "Mošćanica", "Dobrinja", "Željeznica", "Zujevina"))
 
-# Get cell id of rasters at point locations
-raster::extract(dem_cropped, mts_sjj_sp, df = TRUE, cellnumbers = TRUE)
 
 
-point_cells <- rowColFromCell(dem_cropped, cellFromXY(dem_cropped, mts_sjj_sp))
+# Create buffers of different widths
+rivers_primary <- sarajevo_rivers_raw %>% 
+  filter(name %in% c("Miljacka", "Bosna", "Željeznica")) %>% 
+  st_buffer(dist = 0.0006) %>% 
+  group_by(name) %>%
+  summarise()
 
-mapview(mts_sjj)
+rivers_secondary <- sarajevo_rivers_raw %>% 
+  filter(name %in% c("Miljacka Mokranjska", "Miljacka Paljanska",
+                     "Mošćanica", "Dobrinja", "Zujevina")) %>% 
+  st_buffer(dist = 0.0003) %>% 
+  group_by(name) %>%
+  summarise() 
+  
 
-elmat2 <- elmat[, ncol(elmat):1]  # flip
 
-elmat2 %>%
-  sphere_shade(texture = "desert") %>%
+# Create rivers set with different widths
+rivers_width <- rbind(rivers_primary,
+      rivers_secondary)
+
+# mapview(aa)
+# Rasterize openstreet map highway layer with a buffer
+
+# rijeke <- prepare_overlay_data(sarajevo_rivers, dem_cropped_small, "blue4")
+ceste <- prepare_overlay_data(sarajevo_roads, dem_cropped_small, c("transparent", "black"))
+
+rijeke2 <- prepare_overlay_data(rivers_width, dem_cropped_small, c("transparent", "black"))
+
+
+dem_ovrl <- prepare_overlay_data(dem_cropped_small, dem_cropped_small, terrain.colors(100))
+
+
+
+mat_highway %>%
+  ray_shade(zscale=50,maxsearch = 500,anglebreaks = seq(20,30,0.1)) %>%
+  add_overlay(rijeke2,               alphacolor = "transparent",
+alphalayer = 0.9) %>%
+  add_overlay(ceste,               alphacolor = "transparent",
+alphalayer = 0.7) %>%
   plot_map()
 
-elmat3 <- elmat2 - 500
+# rail_mat <- matrix(extract(rail_raster, extent(rail_raster)),
+# nrow=nrow(rail_raster),
+# ncol=ncol(rail_raster))
+# rail_mat <- rail_mat[, ncol(rail_mat):1]  # flip
 
-elmat3 %>%
-  sphere_shade(texture = "desert") %>%
-  add_water(detect_water(elmat3), color="blue") %>%
-  add_shadow(ray_shade(elmat3,zscale=3,maxsearch = 300),0.7) %>%
-  add_shadow(elmat3,0.7) %>%
-  plot_3d(elmat3,zscale=10, fov=0,zoom=0.75,phi=45)
+# Convert to rayshader-friendly object
+# elmat <- matrix(raster::extract(dem_cropped,raster::extent(dem_cropped)),
+#                 nrow=ncol(dem_cropped),ncol=nrow(dem_cropped))
 
-render_label(elmat, y = point_cells[1, 1], x = point_cells[1, 2], z=8000, zscale=50, 
-             text = "Trebevic", textsize = 2, linewidth = 5)
-# 
-# render_label(elmat, y = 256, x = 647,
-#              z = 6000, zscale = 50, 
-#              text = "Hum",color="darkred", textcolor = "darkred", textsize = 2, linewidth = 5)
-# 
-render_label(elmat,y= point_cells[2, 1], x= point_cells[2, 2], z=8000, zscale=50,
-             text = "Zuc", dashed = TRUE, textsize = 2, linewidth = 5)
+#######################################################
 
-render_label(elmat, y = point_cells[3, 1], x = point_cells[3, 2], z=8000, zscale=30, color = "red",
-             text = "Crni vrh", textsize = 2, linewidth = 2)
+
+# mat_small %>%
+#   sphere_shade(texture = "desert") %>%
+#   # add_water(detect_water(mat_small), color="imhof1") %>%
+#   plot_map()
 ###
-z=100
-model <- elmat %>%
-  sphere_shade(sunangle = 200) %>%
-  add_shadow(ambient_shade(elmat, zscale=z, anglebreaks = seq(65, 65, 1))) %>%
-  add_shadow(ray_shade(elmat, zscale=z, lambert=FALSE, anglebreaks = seq(65, 65, 1))) %>%
-  add_water(t(rail_mat)) # for subway routes
-
-model %>% plot_map()
 
 
-dim(elmat)
-dim(t(rail_mat))
-# 
-# Plot 3D
+# Create ray shader object for small dem
+mat_small <- rayshaderize(dem_cropped_small)
+# Create shadow layer
+ambmat_small <- ambient_shade(mat_small)
 
 
-model %>%  
-  plot_3d(elmat, zscale=8, 
+
+
+
+###
+
+
+
+mat_small %>%
+  sphere_shade(texture = "imhof4") %>%
+  # sphere_shade(texture = create_texture("#fff673","#55967a","#8fb28a","#55967a","#cfe0a9")) %>%
+  # add_water(detect_water(mat_small), color="desert") %>%
+  add_shadow(ray_shade(mat_small,zscale = 2,maxsearch = 300),0.5) %>%
+  add_shadow(ambmat_small,0.5) %>%
+  add_overlay(rijeke2, 
+              alphacolor = "transparent",
+              alphalayer = 0.9) %>%
+  add_overlay(ceste, 
+              alphacolor = "transparent",
+              alphalayer = 0.8) %>%
+  plot_3d(mat_small,zscale = 12,fov = 0,
+          theta = 175, zoom = 0.65,
+          phi = 35, windowsize = c(1000,800),
+          water = TRUE, 
+          waterdepth = 60, # Fog height
+          # wateralpha = 0.9,
+          watercolor = "grey50",
+          # watercolor = "imhof4",
+          waterlinecolor = "white")
+
+
+ls("package:rayshader")
+render_snapshot(filename = "./Output/rs_plot2.png")
+
+mat_small %>%
+  sphere_shade(texture = "imhof4") %>%
+  # sphere_shade(texture = create_texture("#fff673","#55967a","#8fb28a","#55967a","#cfe0a9")) %>%
+  # add_water(detect_water(mat_small), color="desert") %>%
+  add_shadow(ray_shade(mat_small,zscale = 2,maxsearch = 300),0.5) %>%
+  add_shadow(ambmat_small,0.5) %>%
+  add_overlay(dem_ovrl, 
+              alphacolor = "transparent",
+              alphalayer = 0.1) %>%
+  add_overlay(rijeke2, 
+              alphacolor = "transparent",
+              alphalayer = 0.9) %>%
+  
+  add_overlay(ceste, 
+              alphacolor = "transparent",
+              alphalayer = 0.9) %>%
+  plot_3d(mat_small,zscale = 12,fov = 0,
+          theta = 175, zoom = 0.65,
+          phi = 35, windowsize = c(1000,800),
+          water = TRUE, waterdepth = 60, 
+          wateralpha = 0.6,
+          watercolor = "grey70")#,
+          # watercolor = "imhof4",
+          # waterlinecolor = "white") 
+# %>% 
+#   save_png(filename = "./Output/rs_plot1.png")
+
+#### Create labels
+# # Extract from points
+
+# dim(mat_small)
+render_label(mat_small, x = 818, y = 118, z = 5500, zscale=30, color = "black",
+             text = "Trebević", textsize = 2, linewidth = 2)
+
+
+render_label(mat_small, x = 552, y = 315, z = 1500, zscale=12,
+             # dashed = TRUE,
+             text = "Hum",textsize = 2, linewidth = 2)
+
+render_label(mat_small, x = 400, y = 228, z = 2300, zscale=12, 
+             # dashed = TRUE,
+             text = "Miljacka",textsize = 1.75, color = "blue4", textcolor = "blue4", linewidth = 1)
+
+
+render_label(mat_small, x = 125, y = 120, z = 2100, zscale=12, 
+             # dashed = TRUE,
+             text = "Vrelo Bosne",textsize = 1.75, color = "blue4", textcolor = "blue4", linewidth = 1)
+
+
+render_label(mat_small, x = 490, y = 415, z = 1100, zscale=12,
+             text = "M223",textsize = 1, color = "grey10", textcolor = "grey10", linewidth = 1)
+
+###########################
+
+
+
+mat_small %>%  
+  plot_3d(mat_small, zscale=8, 
           soliddepth=-60, 
           windowsize = c(1200, 1200), 
           fov=60, 
